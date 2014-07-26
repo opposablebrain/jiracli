@@ -240,7 +240,7 @@ def parse_args():
                         help='disable colorful output (default: %(default)s)')
     group_issue = parser.add_argument_group('issue')
     #create
-    group_issue.add_argument('-c', '--issue-create', nargs=5, metavar=('project-key', 'issue-type', 'summary', 'labels', 'components'),
+    group_issue.add_argument('-c', '--issue-create', nargs=6, metavar=('project-key', 'issue-type', 'summary', 'labels', 'components', 'assignee'),
                              help='create a new issue. "labels" can be a single label or a comma seperated list of labels. "components" can be a comma seperated list of components.')
 
     group_issue.add_argument('--issues-create', nargs=4, metavar=('project-key', 'parent-issue-type', 'child-issue-type', 'file'),
@@ -432,6 +432,7 @@ if __name__ == "__main__":
             issue_dict['parent'] = { 'id': args['issue_parent'] }
 
         new_issue = jira.create_issue(fields=issue_dict)
+        new_issue.update(assignee={'name': args['issue_create'][5]})
         issue_list_print([new_issue], True, True, False)
         sys.exit(0)
 
