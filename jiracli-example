@@ -51,7 +51,7 @@ def setup_logging(debug):
 def editor_get_text(text_template):
     """get text from an editor via a tempfile"""
     tf = tempfile.NamedTemporaryFile()
-    tf.write("-- lines starting with '--' will be ignored\n")
+    tf.write("-- Write below. Lines starting with '--' will be ignored\n")
     tf.write(text_template)
     tf.flush()
     editor = os.environ.setdefault("EDITOR","vim")
@@ -170,6 +170,8 @@ def issue_format(issue, show_desc=False, show_comments=False):
             fields[k] = ""
     return fields
 
+def usage():
+    print(sys.argv[0] + " summary [issue type] [component]")
 
 def issue_list_print(issue_list, show_desc, show_comments, oneline):
     """print a list of issues"""
@@ -193,35 +195,69 @@ def issue_list_print(issue_list, show_desc, show_comments, oneline):
 
 if __name__ == "__main__":
     # Config
-    projectNames = {'scap':'AP',
+    projectNames = {'scap':'SAN', # FOR TESTING; fix later
         'navigationlib':'AP',
         'uioslib':'CC'}
 
     try:
         stashURL=check_output("git remote show origin |grep Fetch", shell=True);
     except CalledProcessError:
-        print("This does not look like a Stash repo.")
+        print("This does not look like a git repo.")
         sys.exit(1)
 
+    if not "stash" in stashURL:
+        print("This does not look like a Stash project.")
+        sys.exit(2)
+
+    # get the reponame so we can create a feature branch for the issue we are creating
     repoName=re.sub('\.git$','',re.sub('.*war\/','',stashURL)).rstrip().lower()
+    if not repoName in projectNames:
+        print("Project " + repoName + " is not recognized by this script. Then again, this is a work in progress.");
+        sys.exit(3)
+
+    if len(sys.argv) > 1:
+        summaryText = str(sys.argv[1])
+    else:
+        usage()
+        sys.exit(4)
+
+    if len(sys.argv) > 2:
+        issueType = str(sys.argv[2])
+    else:
+        issueType = "Bug"
+
+    if len(sys.argv) > 3:
+        componentName = str(sys.argv[3])
+    else:
+        componentName = None
 
     setup_logging(None)
     conf = config_get()
     jira = jira_obj_get(conf)
 
     #get description from text editor
-#    desc = editor_get_text("-- describe the issue here")
-    desc = "Test issue [~rlyasoff]"
+    desc = editor_get_text("")
+
+
     issue_dict = {
-        'project': {'key': 'SAN'},
-        'issuetype': {'name': 'Bug'},
-        'summary': 'Summary Text',
-        'description': desc,
-    }
-    issue_dict['components'] = [{'name': 'Component A'}]
+        'project': {'key': projectNames[repoName]},
+        'issuetype': {'name': issueType},
+        'summary': summaryText,
+        'description': desc
+        }
+
+    if componentName:
+        issue_dict['components'] = [{'name': componentName}]
 
     new_issue = jira.create_issue(fields=issue_dict)
-    new_issue.update(assignee={'name': 'rlyasoff'})
+    
+    new_issue.update(assignee={'name': conf['user']})
+    
     issue_list_print([new_issue], True, True, False)
+
+    # todo: optionally stash, then create issue branch: checkout -b "feature/ISSUE_ID"
+
+    print("git stash; git checkout -b feature/" + new_issue.key)
+
     sys.exit(0)
 
