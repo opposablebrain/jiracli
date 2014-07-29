@@ -1,0 +1,227 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+#
+# Copyright 2013 Thomas Bechtold <thomasbechtold@jpberlin.de>
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
+from __future__ import print_function
+
+import os
+import sys
+import argparse
+import ConfigParser
+import logging
+import getpass
+import datetime
+from collections import OrderedDict
+from termcolor import colored as colorfunc
+from jira.client import JIRA
+import tempfile
+import re
+from subprocess import check_output, CalledProcessError
+#log object
+log = None
+#path to the user configuration file
+user_config_path=os.path.expanduser('~/.jiracli.ini')
+
+
+def setup_logging(debug):
+    global log
+    log = logging.getLogger('jiracli')
+    sh = logging.StreamHandler()
+    if debug:
+        log.setLevel(logging.DEBUG)
+        sh.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(levelname)s - %(message)s')
+    sh.setFormatter(formatter)
+    log.addHandler(sh)
+
+def editor_get_text(text_template):
+    """get text from an editor via a tempfile"""
+    tf = tempfile.NamedTemporaryFile()
+    tf.write("-- lines starting with '--' will be ignored\n")
+    tf.write(text_template)
+    tf.flush()
+    editor = os.environ.setdefault("EDITOR","vim")
+    os.system("%s %s" % (editor, tf.name))
+    tf.seek(0)
+    return "\n".join([line for line in tf.read().split('\n') if not line.startswith("--")])
+
+
+def config_credentials_get():
+    #get username, password and url
+    user = raw_input("username:")
+    password = getpass.getpass()
+    url = raw_input("url:")
+    return user, password, url
+
+
+def config_get():
+    conf = ConfigParser.SafeConfigParser()
+    conf.read([user_config_path])
+    section_name = "defaults"
+    if not conf.has_section(section_name):
+        user, password, url = config_credentials_get()
+        conf.add_section(section_name)
+        conf.set(section_name, "user", user)
+        conf.set(section_name, "password", password)
+        conf.set(section_name, "url", url)
+        with open(user_config_path, 'w') as f:
+            conf.write(f)
+            log.info("username and password written to '{0}'".format(user_config_path))
+    else:
+        log.debug("{0} section already available in '{1}'".format(section_name, user_config_path))
+    return dict(conf.items(section_name))
+
+
+def jira_obj_get(conf):
+    options = {
+        'server': conf['url'],
+    }
+    return JIRA(options, basic_auth=(conf['user'], conf['password']))
+
+
+def dtstr2dt(dtstr):
+    """nicer datetime string
+    jira delivers something like '2013-11-07T16:13:24.000+0100'"""
+    #TODO: maybe %c is not the best formatter. Output depends on current locale.
+    return datetime.datetime.strptime(dtstr[:-9], "%Y-%m-%dT%H:%M:%S").strftime("%c")
+
+
+def issue_status_color(status):
+    """get color for given issue status"""
+    if status.lower() == 'closed':
+        return 'green'
+    elif status.lower() == 'open':
+        return 'red'
+    elif status.lower() == 'in progress':
+        return 'yellow'
+    else:
+        return 'blue'
+
+
+def issue_header(issue):
+    """get a single line string for an issue"""
+    return "%s (%s)" % (colorfunc("%s, %s: %s" % (issue.key,
+                                                  issue.fields.issuetype.name,
+                                                  issue.fields.summary), None, attrs=['bold', 'underline']),
+                        colorfunc("%s, %s" % (issue.fields.status.name,
+                                              issue.fields.priority.name),
+                                  issue_status_color(issue.fields.status.name),
+                                  attrs=['bold']))
+
+
+def issue_format(issue, show_desc=False, show_comments=False):
+    """return a dict with fields which describe the issue"""
+    fields = OrderedDict()
+    if hasattr(issue.fields, "parent"):
+        fields['parent'] = "%s" % (issue.fields.parent.key)
+    if show_desc:
+        fields['description'] = "\n%s" % (issue.fields.description)
+    fields['created'] = "%s, by %s" % (dtstr2dt(issue.fields.created), issue.fields.reporter.name)
+    if hasattr(issue.fields.assignee, 'name'):
+        fields['assignee'] = issue.fields.assignee.name
+    fields['updated'] = dtstr2dt(issue.fields.updated)
+    if hasattr(issue.fields, 'versions') and len(issue.fields.fixVersions) > 0:
+        fields['versions'] = ", ".join(map(lambda x: x.name, issue.fields.fixVersions))
+    if hasattr(issue.fields, 'components') and len(issue.fields.components) > 0:
+        fields['components'] = ", ".join(map(lambda x: x.name, issue.fields.components))
+    if hasattr(issue.fields, 'labels') and len(issue.fields.labels) > 0:
+        fields['labels'] = ", ".join(map(lambda x: x, issue.fields.labels))
+    if hasattr(issue.fields, 'attachment') and len(issue.fields.attachment) > 0:
+        fields['attachment'] = ", ".join(map(lambda x: x.filename, issue.fields.attachment))
+    if hasattr(issue.fields, 'issuelinks') and len(issue.fields.issuelinks) > 0:
+        link_list = list()
+        #inward issue: the issue to link from
+        #outward issue: the issue to link to
+        for link in issue.fields.issuelinks:
+            if 'outwardIssue' in link.raw:
+                link_list.append(link.raw['outwardIssue'])
+            elif 'inwardIssue' in link.raw:
+                link_list.append(link.raw['inwardIssue'])
+        fields['issuelinks'] = ", ".join(map(lambda x: x['key'], link_list))
+    if show_comments:
+        if hasattr(issue.fields, 'comment'):
+            fields['comments'] = "%s\n%s" % (len(issue.fields.comment.comments), "\n\n".join(map(lambda x: "%s\n%s" % (colorfunc("%s, %s" % (dtstr2dt(x.updated), x.updateAuthor.name), None, attrs=['reverse']), x.body),  issue.fields.comment.comments)))
+        else:
+            fields['comments'] = "0"
+    else:
+        #show only the number of comments
+        if hasattr(issue.fields, 'comment') and len(issue.fields.comment.comments) > 0:
+            fields['comments'] = "%s" % (len(issue.fields.comment.comments))
+
+
+    #print(dir(issue.fields))
+    #add empty strings if field not available
+    for k,v in fields.items():
+        if not v:
+            fields[k] = ""
+    return fields
+
+
+def issue_list_print(issue_list, show_desc, show_comments, oneline):
+    """print a list of issues"""
+    #disable color if oneline is used
+    if oneline:
+        global colorfunc
+        colorfunc = lambda *a,**k:a[0]
+
+    for issue in issue_list:
+        #issue header
+        print(issue_header(issue))
+        if oneline:
+            continue
+        #issue description
+        desc_fields = issue_format(issue,
+                                   show_desc=show_desc,
+                                   show_comments=show_comments)
+        print("\n".join( " : ".join((k.ljust(20),v)) for k,v in desc_fields.items() ) + "\n")
+
+
+
+if __name__ == "__main__":
+    # Config
+    projectNames = {'scap':'AP',
+        'navigationlib':'AP',
+        'uioslib':'CC'}
+
+    try:
+        stashURL=check_output("git remote show origin |grep Fetch", shell=True);
+    except CalledProcessError:
+        print("This does not look like a Stash repo.")
+        sys.exit(1)
+
+    repoName=re.sub('\.git$','',re.sub('.*war\/','',stashURL)).rstrip().lower()
+
+    setup_logging(None)
+    conf = config_get()
+    jira = jira_obj_get(conf)
+
+    #get description from text editor
+#    desc = editor_get_text("-- describe the issue here")
+    desc = "Test issue [~rlyasoff]"
+    issue_dict = {
+        'project': {'key': 'SAN'},
+        'issuetype': {'name': 'Bug'},
+        'summary': 'Summary Text',
+        'description': desc,
+    }
+    issue_dict['components'] = [{'name': 'Component A'}]
+
+    new_issue = jira.create_issue(fields=issue_dict)
+    new_issue.update(assignee={'name': 'rlyasoff'})
+    issue_list_print([new_issue], True, True, False)
+    sys.exit(0)
+
