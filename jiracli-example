@@ -255,9 +255,7 @@ if __name__ == "__main__":
     
     issue_list_print([new_issue], True, True, False)
 
-    # todo: optionally stash, then create issue branch: checkout -b "feature/ISSUE_ID"
-
-    print("git stash; git checkout -b feature/" + new_issue.key)
+    check_output("git stash; git checkout -b feature/" + new_issue.key, shell=True)
 
     sys.exit(0)
 
