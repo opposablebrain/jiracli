@@ -195,7 +195,7 @@ def issue_list_print(issue_list, show_desc, show_comments, oneline):
 
 if __name__ == "__main__":
     # Config
-    projectNames = {'scap':'SAN', # FOR TESTING; fix later
+    projectNames = {'scap':'SAN',
         'navigationlib':'AP',
         'uioslib':'CC'}
 
@@ -252,8 +252,12 @@ if __name__ == "__main__":
     new_issue = jira.create_issue(fields=issue_dict)
     
     new_issue.update(assignee={'name': conf['user']})
-    
+
     issue_list_print([new_issue], True, True, False)
+
+    print("Available transitions:")
+    transitions = jira.transitions(issue)
+    [(t['id'], t['name']) for t in transitions]
 
     check_output("git stash; git checkout -b feature/" + new_issue.key, shell=True)
 
